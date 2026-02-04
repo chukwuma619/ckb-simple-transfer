@@ -39,14 +39,14 @@ export async function transfer(
     outputsData: [],
   });
 
-  // CCC transactions are easy to be edited
-  tx.outputs.forEach((output, i) => {
-    if (output.capacity > ccc.fixedPointFrom(amountInCKB)) {
-      alert(`Insufficient capacity at output ${i} to store data`);
-      return;
+  const amountShannon = ccc.fixedPointFrom(amountInCKB);
+  for (let i = 0; i < tx.outputs.length; i++) {
+    const output = tx.outputs[i];
+    if (output.capacity > amountShannon) {
+      throw new Error(`Insufficient capacity at output ${i} to store data (need at least ${amountInCKB} CKB)`);
     }
-    output.capacity = ccc.fixedPointFrom(amountInCKB);
-  });
+    output.capacity = amountShannon;
+  }
 
   // Complete missing parts for transaction
   await tx.completeInputsByCapacity(signer);

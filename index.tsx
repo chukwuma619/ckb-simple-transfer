@@ -1,114 +1,164 @@
 import { createRoot } from "react-dom/client";
-import React, { useEffect, useState } from 'react';
-import { capacityOf, generateAccountFromPrivateKey, shannonToCKB, transfer, wait } from './lib';
-import { Script } from '@ckb-ccc/core';
+import React, { useCallback, useEffect, useState } from "react";
+import { capacityOf, generateAccountFromPrivateKey, shannonToCKB, transfer, wait } from "./lib";
+import { Script } from "@ckb-ccc/core";
+
+const PRIVATE_KEY_REGEX = /^0x[0-9a-fA-F]{64}$/;
+function isValidPrivateKey(value: string): boolean {
+  return value === "" || PRIVATE_KEY_REGEX.test(value);
+}
 
 const container = document.getElementById("root");
-const root = createRoot(container)
-root.render(<App />);
+if (container) {
+  const root = createRoot(container);
+  root.render(<App />);
+}
 
 export function App() {
-  // default value: first account privkey from offckb
-  const [privKey, setPrivKey] = useState('0x6109170b275a09ad54877b82f7d9930f88cab5717d484fb4741ae9d1dd078cd6');
-  const [fromAddr, setFromAddr] = useState('');
+  const [privKey, setPrivKey] = useState("");
+  const [fromAddr, setFromAddr] = useState("");
   const [fromLock, setFromLock] = useState<Script>();
-  const [balance, setBalance] = useState('0');
+  const [balance, setBalance] = useState("0");
 
-  // default value: second account address from offckb
-  const [toAddr, setToAddr] = useState('ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqt435c3epyrupszm7khk6weq5lrlyt52lg48ucew');
-  // default value: 62 CKB
-  const [amountInCKB, setAmountInCKB] = useState('62');
+  const [toAddr, setToAddr] = useState("");
+  const [amountInCKB, setAmountInCKB] = useState("62");
 
   const [isTransferring, setIsTransferring] = useState(false);
   const [txHash, setTxHash] = useState<string>();
+  const [error, setError] = useState<string | null>(null);
+
+  const updateFromInfo = useCallback(async () => {
+    if (!privKey || !isValidPrivateKey(privKey)) return;
+    setError(null);
+    try {
+      const { lockScript, address } = await generateAccountFromPrivateKey(privKey);
+      const capacity = await capacityOf(address);
+      setFromAddr(address);
+      setFromLock(lockScript);
+      setBalance(shannonToCKB(capacity).toString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load account");
+    }
+  }, [privKey]);
 
   useEffect(() => {
     if (privKey) {
       updateFromInfo();
-    }
-  }, [privKey]);
-
-  const updateFromInfo = async () => {
-    const { lockScript, address } = await generateAccountFromPrivateKey(privKey);
-    const capacity = await capacityOf(address);
-    setFromAddr(address);
-    setFromLock(lockScript);
-    setBalance(shannonToCKB(capacity).toString());
-  };
-
-  const onInputPrivKey = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Regular expression to match a valid private key with "0x" prefix
-    const priv = e.target.value;
-    const privateKeyRegex = /^0x[0-9a-fA-F]{64}$/;
-
-    const isValid = privateKeyRegex.test(priv);
-    if (isValid) {
-      setPrivKey(priv);
     } else {
-      alert(
-        `Invalid private key: must start with 0x and 32 bytes length. Ensure you're using a valid private key from the offckb accounts list.`,
-      );
+      setFromAddr("");
+      setFromLock(undefined);
+      setBalance("0");
     }
-  };
+  }, [privKey, updateFromInfo]);
 
   const onTransfer = async () => {
-    setIsTransferring(true);
-    const txHash = await transfer(toAddr, amountInCKB, privKey).catch(alert);
-
-    // We can wait for this txHash to be on-chain so that we can trigger the UI/UX updates including balance.
-    if(txHash){
-      setTxHash(txHash);
-      // wait 10 seconds for tx confirm
-      // the right way to do this is to use get_transaction rpc but here we just keep it simple
-      await wait(10);
-      
-      await updateFromInfo();
+    if (!isValidPrivateKey(privKey)) {
+      setError("Invalid private key: must start with 0x and be 32 bytes (64 hex chars).");
+      return;
     }
-    
-   setIsTransferring(false);
-  }
+    setError(null);
+    setIsTransferring(true);
+    try {
+      const hash = await transfer(toAddr, amountInCKB, privKey);
+      if (hash) {
+        setTxHash(hash);
+        await wait(10);
+        await updateFromInfo();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Transfer failed");
+    } finally {
+      setIsTransferring(false);
+    }
+  };
 
-  const enabled = +amountInCKB > 61 && +balance > +amountInCKB && toAddr.length > 0 && !isTransferring;
+  const validPrivKey = isValidPrivateKey(privKey);
+  const enabled =
+    validPrivKey &&
+    +amountInCKB > 61 &&
+    +balance >= +amountInCKB &&
+    toAddr.length > 0 &&
+    !isTransferring;
   const amountTip =
     amountInCKB.length > 0 && +amountInCKB < 61 ? (
       <span>
-        amount must larger than 61 CKB, see{' '}
-        <a href="https://docs.nervos.org/docs/wallets/#requirements-for-ckb-transfers">why</a>
+        Amount must be larger than 61 CKB, see{" "}
+        <a href="https://docs.nervos.org/docs/wallets/#requirements-for-ckb-transfers" target="_blank" rel="noopener noreferrer">
+          why
+        </a>
       </span>
     ) : null;
 
   return (
-    <div>
+    <div style={{ maxWidth: 560, margin: "2rem auto", padding: "0 1rem", fontFamily: "system-ui, sans-serif" }}>
       <h1>View and Transfer Balance</h1>
-      <label htmlFor="private-key">Private Key: </label>&nbsp;
-      <input id="private-key" type="text" value={privKey} onChange={onInputPrivKey} />
-      <ul>
-        <li>CKB Address: {fromAddr}</li>
+      {error && (
+        <div style={{ padding: "0.75rem", marginBottom: "1rem", background: "#fef2f2", color: "#b91c1c", borderRadius: 6 }}>
+          {error}
+        </div>
+      )}
+      <div style={{ marginBottom: "1rem" }}>
+        <label htmlFor="private-key">Private Key</label>
+        <input
+          id="private-key"
+          type="password"
+          autoComplete="off"
+          placeholder="0x..."
+          value={privKey}
+          onChange={(e) => setPrivKey(e.target.value)}
+          style={{ display: "block", width: "100%", marginTop: 4, padding: "0.5rem", boxSizing: "border-box" }}
+        />
+        {privKey && !validPrivKey && (
+          <small style={{ color: "#b91c1c" }}>Must start with 0x and be 64 hex characters.</small>
+        )}
+      </div>
+      <ul style={{ listStyle: "none", padding: 0 }}>
+        <li>CKB Address: {fromAddr || "—"}</li>
         <li>
-          Current lock script:
-          <pre>{JSON.stringify(fromLock, null, 2)}</pre>
+          Lock script: <pre style={{ overflow: "auto", background: "#f4f4f4", padding: "0.5rem", borderRadius: 4 }}>{JSON.stringify(fromLock ?? {}, null, 2)}</pre>
         </li>
-
         <li>Total capacity: {balance} CKB</li>
       </ul>
-      <label htmlFor="to-address">Transfer to Address: </label>&nbsp;
-      <input id="to-address" type="text" value={toAddr} onChange={(e) => setToAddr(e.target.value)} />
-      <br />
-      <label htmlFor="amount">Amount</label>
-      &nbsp;
-      <input id="amount" type="number" value={amountInCKB} onChange={(e) => setAmountInCKB(e.target.value)} />CKB{" "}
-      <small>Tx fee: 0.001 CKB</small>
-      <br />
-      <small style={{ color: 'red' }}>{amountTip}</small>
-      <br />
-      <br />
+      <div style={{ marginBottom: "1rem" }}>
+        <label htmlFor="to-address">Transfer to Address</label>
+        <input
+          id="to-address"
+          type="text"
+          placeholder="ckt1..."
+          value={toAddr}
+          onChange={(e) => setToAddr(e.target.value)}
+          style={{ display: "block", width: "100%", marginTop: 4, padding: "0.5rem", boxSizing: "border-box" }}
+        />
+      </div>
+      <div style={{ marginBottom: "1rem" }}>
+        <label htmlFor="amount">Amount (CKB)</label>
+        <input
+          id="amount"
+          type="number"
+          min={61}
+          value={amountInCKB}
+          onChange={(e) => setAmountInCKB(e.target.value)}
+          style={{ display: "block", width: "100%", marginTop: 4, padding: "0.5rem", boxSizing: "border-box" }}
+        />
+        <small style={{ color: "#666" }}>Min 61 CKB. Tx fee ~0.001 CKB.</small>
+      </div>
+      {amountTip && <small style={{ color: "#b91c1c", display: "block", marginBottom: "1rem" }}>{amountTip}</small>}
       <button
         disabled={!enabled}
         onClick={onTransfer}
+        style={{
+          padding: "0.5rem 1rem",
+          cursor: enabled ? "pointer" : "not-allowed",
+          opacity: enabled ? 1 : 0.6,
+        }}
       >
-        Transfer
+        {isTransferring ? "Transferring…" : "Transfer"}
       </button>
-      {txHash && <div>tx hash: {txHash}</div>}
+      {txHash && (
+        <div style={{ marginTop: "1rem", wordBreak: "break-all" }}>
+          Tx hash: <code>{txHash}</code>
+        </div>
+      )}
     </div>
   );
 }
